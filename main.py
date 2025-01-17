@@ -46,5 +46,7 @@ def create_data(set="train"):
 
 
 if __name__ == "__main__":
-    create_data("train")
-    create_data("test")
+    # create_data("train")
+    # create_data("test")
+
+    
