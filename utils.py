@@ -1,20 +1,105 @@
-import torch
-import matplotlib.pyplot as plt
-from PIL import Image
-from torchvision import transforms
-from torchvision import models
+
 import os
-from tqdm import tqdm
+
 import wandb
 
-import time
-import psutil
-from PIL import Image
-import torch
-from torchvision import transforms
+
 
 from codecarbon import EmissionsTracker
 import cv2
+import re
+
+import tensorflow as tf
+from tensorflow.keras.applications import VGG19
+from tensorflow.keras.layers import Dense, Flatten, GlobalAveragePooling2D, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.utils import image_dataset_from_directory
+from tensorflow.keras import layers
+
+
+def parse_bboxes_file(bboxes_file):
+    bboxes = []
+    try:
+        with open(bboxes_file, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                parts = line.strip().split()
+                frame_index, class_id = int(parts[0]), int(parts[1])
+                if len(parts) > 2:
+                    x_min, y_min, width, height = map(int, parts[2:])
+                    x_max = x_min + width
+                    y_max = y_min + height
+                    bboxes.append({
+                        'frame_index': frame_index,
+                        'class_id': class_id,
+                        'x_min': x_min,
+                        'y_min': y_min,
+                        'x_max': x_max,
+                        'y_max': y_max
+                    })
+    except Exception as e:
+        print(f"[ERREUR] Impossible de lire {bboxes_file} : {e}")
+    return bboxes
+
+def extract_crops_from_video(video_path, bboxes, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        return
+
+    for bbox in bboxes:
+        frame_index = bbox['frame_index']
+        class_id = bbox['class_id']
+        x_min, y_min, x_max, y_max = bbox['x_min'], bbox['y_min'], bbox['x_max'], bbox['y_max']
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        crop = frame[y_min:y_max, x_min:x_max]
+        class_dir = output_dir
+        os.makedirs(class_dir, exist_ok=True)
+
+        crop_name = f"frame_{frame_index:04d}_crop_{video_path.split("/")[3]}.jpg"
+        crop_path = os.path.join(class_dir, crop_name)
+        cv2.imwrite(crop_path, crop)
+
+
+    cap.release()
+
+def find_matching_txt(video_file, bboxes_dir):
+    # On extrait le nom sans extension
+    base_name = os.path.splitext(video_file)[0]
+    pattern = rf"^{re.escape(base_name)}.*_bboxes\.txt$"
+
+    for file in os.listdir(bboxes_dir):
+        if re.match(pattern, file):
+            return os.path.join(bboxes_dir, file)
+    return None
+
+def creata_bbox_data(videos_root, bboxes_root, output_root):
+    for dirpath, _, files in os.walk(videos_root):
+        for i, file in enumerate(files):
+            if file.endswith('.mp4'):
+                video_path = os.path.join(dirpath, file)
+                relative_path = os.path.relpath(dirpath, videos_root)
+                bboxes_dir = os.path.join(bboxes_root, relative_path)
+
+
+                if os.path.exists(bboxes_dir):
+                    bbox_file = find_matching_txt(file, bboxes_dir)
+                    if bbox_file:
+                        # print(output_root)
+                        # print("/".join(relative_path.split("/")[:2]))
+                        # print(file)
+                        output_dir = os.path.join(output_root, "/".join(relative_path.split("/")[:2]))
+                        # print(output_dir)
+                        bboxes = parse_bboxes_file(bbox_file)
+                        if bboxes:
+                            extract_crops_from_video(video_path, bboxes, output_dir)
 
 
 
@@ -122,7 +207,7 @@ def get_mp4_paths(directories):
 
 
 @energy_profiler
-def create_data(set="train"):
+def create_saliency_data(set="train"):
     root = os.path.join("GITW_light", set)
     directories = get_all_directories(root, OBJECTS)
     mp4_paths = get_mp4_paths(directories)
@@ -149,6 +234,54 @@ def create_data(set="train"):
 OBJECTS = ["Bowl", "CanOfCocaCola", "Jam", "MilkBottle", "Mug", "OilBottle", "Rice", "Sugar", "VinegarBottle"]
 
 
+
+class CustomVGG19Model:
+    def __init__(self, num_classes, input_shape, apply_augmentation=False):
+        self.num_classes = num_classes
+        self.input_shape = input_shape
+        self.apply_augmentation = apply_augmentation
+        self.model = self.build_model()
+
+    def build_model(self):
+        inputs = tf.keras.Input(shape=self.input_shape)
+        if self.apply_augmentation:
+            layer = layers.RandomFlip('horizontal')(inputs)
+            layer = layers.RandomRotation(0.1)(layer)
+            layer = layers.RandomZoom(0.2)(layer)
+        else:
+            layer = inputs
+        layer = layers.Rescaling(1/255)(layer)
+
+        base_model = VGG19(weights='imagenet', include_top=False, input_tensor=layer)
+        base_model.trainable = False
+
+        x = base_model.output
+        x = GlobalAveragePooling2D()(x)
+        x = Dense(256, activation='relu')(x)
+        x = Dense(128, activation='relu')(x)
+        output = Dense(self.num_classes, activation='softmax')(x)
+
+        model = Model(inputs=inputs, outputs=output)
+        model.compile(optimizer=Adam(learning_rate=0.0001),
+                      loss='categorical_crossentropy',
+                      metrics=['accuracy'])
+        return model
+
+    def summary(self):
+        self.model.summary()
+    
+    def fit(self, *args, **kwargs):
+        return self.model.fit(*args, **kwargs)
+    
+    def predict(self, *args, **kwargs):
+        return self.model.predict(*args, **kwargs)
+
 if __name__ == "__main__":
-    create_data("train")
-    create_data("test")
+    
+    videos_root = "GITW_light"
+    bboxes_root = "GITW_light_bboxes"
+    output_root = "bboxes"
+
+    creata_bbox_data(videos_root, bboxes_root, output_root)
+    create_saliency_data("train")
+    create_saliency_data("test")
