@@ -39,7 +39,7 @@ def parse_bboxes_file(bboxes_file):
                         'y_max': y_max
                     })
     except Exception as e:
-        print(f"[ERREUR] Impossible de lire {bboxes_file} : {e}")
+        print(f"Impossible de lire {bboxes_file} : {e}")
     return bboxes
 
 def extract_crops_from_video(video_path, bboxes, output_dir):
@@ -71,7 +71,6 @@ def extract_crops_from_video(video_path, bboxes, output_dir):
     cap.release()
 
 def find_matching_txt(video_file, bboxes_dir):
-    # On extrait le nom sans extension
     base_name = os.path.splitext(video_file)[0]
     pattern = rf"^{re.escape(base_name)}.*_bboxes\.txt$"
 
@@ -92,11 +91,7 @@ def creata_bbox_data(videos_root, bboxes_root, output_root):
                 if os.path.exists(bboxes_dir):
                     bbox_file = find_matching_txt(file, bboxes_dir)
                     if bbox_file:
-                        # print(output_root)
-                        # print("/".join(relative_path.split("/")[:2]))
-                        # print(file)
                         output_dir = os.path.join(output_root, "/".join(relative_path.split("/")[:2]))
-                        # print(output_dir)
                         bboxes = parse_bboxes_file(bbox_file)
                         if bboxes:
                             extract_crops_from_video(video_path, bboxes, output_dir)
